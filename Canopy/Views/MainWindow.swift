@@ -184,12 +184,26 @@ struct SessionView: View {
                 let shouldStart = project?.shouldAutoStartClaude(globalSettings: appState.settings)
                     ?? appState.settings.autoStartClaude
                 if shouldStart {
-                    let isSandboxed = project?.useSandbox ?? appState.settings.useSandbox
-                    var command = project?.resolvedClaudeCommand(globalSettings: appState.settings)
-                        ?? appState.settings.claudeCommand
+                    let backend = appState.sandboxBackend(for: session)
+                    // Mounting $HOME overlaps the ~/.claude mounts and breaks
+                    // the VM (silently empty workdir, or an unkillable hang).
+                    if backend == .appleContainer,
+                       SandboxBackend.isUnsafeContainerWorkingDirectory(session.workingDirectory) {
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(500))
+                            guard !Task.isCancelled else { return }
+                            terminalSession.sendCommand(
+                                "echo '⚠️  Canopy: Apple container sessions cannot run in your home directory (or above it) -- the ~/.claude mounts would overlap. Use a project directory, or turn the sandbox off for this session.'"
+                            )
+                        }
+                        return
+                    }
+                    var command = appState.claudeCommand(for: session)
                     // Resume a specific Claude session if we have its ID.
-                    // Skip in sandbox mode -- session files live inside the ephemeral microVM.
-                    if !isSandboxed, let sessionId = session.claudeSessionId {
+                    // Skipped for sbx -- its session files live inside the
+                    // ephemeral microVM. The Apple container backend mounts
+                    // ~/.claude from the host, so resume works there.
+                    if backend.supportsResume, let sessionId = session.claudeSessionId {
                         command += " --resume \(sessionId)"
                     }
                     Task { @MainActor in

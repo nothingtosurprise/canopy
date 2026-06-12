@@ -66,6 +66,8 @@ Every Canopy feature exists because I was tired of doing something manually. Eac
 | `git checkout main && git pull && git merge feat/… && git worktree remove … && git branch -d …` | Right-click → **Merge & Finish** — two panels, one button |
 | Squint at `ls ~/.claude/projects/` trying to guess how many tokens you've burned this week | Open **Activity** — token counts, session history, 12-week heatmap |
 | Type out the same "write tests", "review security", "update docs" prompt for the tenth time | Save it once in the **Prompt Library** — one right-click to fire it at any session |
+| Scroll a flickering terminal trying to re-read what Claude said ten minutes ago | Right-click → **Show Transcript** — the conversation as clean markdown, live-updating |
+| Worry about what an autonomous agent might touch outside the repo | Pick a **sandbox** — per session, per project, or globally — and Claude runs in a VM with just your worktree mounted |
 
 None of these are big problems on their own. All of them are papercuts. Canopy is a tool for people who notice papercuts.
 
@@ -148,6 +150,12 @@ This is a small feature that turns out to matter a lot: when Claude produces a 4
 
 ---
 
+### 📜 Show Transcript — read the conversation, not the terminal
+
+Right-click any session → **Show Transcript…** for a clean, scrollable, read-only view of the whole conversation. When Claude Code is running, Canopy reads its structured JSONL session log and renders user/assistant turns with markdown formatting — tool calls compacted to one-line summaries instead of walls of raw output. It live-updates as Claude streams, with an auto-tail toggle so you can read history without being yanked back down. The Copy button (`Cmd+Shift+C`) puts the formatted markdown on your clipboard — handy for PR descriptions and notes.
+
+---
+
 ### ⬓ Split terminal — Claude up top, shell below
 
 ![Split terminal](docs/screenshots/split-terminal.png)
@@ -158,18 +166,15 @@ This is the feature I was most skeptical I'd use, and now I can't imagine workin
 
 ---
 
-### 🛡 Docker Sandbox — run Claude in isolation
+### 🛡 Sandboxes — run Claude in isolation
 
-Enable **Run in Docker Sandbox** in Settings or per-project to launch Claude inside a [Docker Sandbox](https://docs.docker.com/ai/sandboxes/) microVM via `sbx run`. Your working directory is bind-mounted into the sandbox, so file edits work normally, but the agent can't touch the rest of your system — network, Docker socket, home directory, and tools are all isolated.
+Pick a sandbox backend in Settings (globally, per project, or per session in the New Worktree Session sheet) to launch Claude inside a VM. Your working directory is bind-mounted into the sandbox, so file edits work normally, but the agent can't touch the rest of your system. A shield icon marks sandboxed sessions in the sidebar, and the split terminal still opens a host shell for inspecting the real filesystem. Canopy validates the required tools before enabling a backend.
 
-Canopy checks that both Docker Desktop and `sbx` are installed before enabling the toggle. When sandbox mode is active:
+**Docker Sandbox (sbx)** — a [Docker Sandbox](https://docs.docker.com/ai/sandboxes/) microVM via `sbx run`. Session resume is disabled (session files live inside the ephemeral microVM).
+*Requirements:* [Docker Desktop](https://www.docker.com/products/docker-desktop/) and `sbx` (`brew install docker/tap/sbx`).
 
-- The command becomes `sbx run [sbx-flags] claude -- [claude-flags]`
-- Session resume is disabled (session files live inside the ephemeral microVM)
-- A shield icon appears next to the session name in the sidebar
-- The split terminal still opens a host shell (useful for inspecting the real filesystem)
-
-**Requirements:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) and `sbx` (`brew install docker/tap/sbx`).
+**Apple container** — a lightweight VM via Apple's open-source [container](https://github.com/apple/container) runtime, no Docker Desktop needed. Canopy mounts the worktree, the project's main repo, and your `~/.claude` state at their host paths — so git works inside the sandbox and **session resume works**, unlike sbx. The default `canopy-claude` image is built in one click (**Settings → Build Image**); a one-time `/login` inside the first sandboxed session sets up credentials.
+*Requirements:* macOS 26+ on Apple silicon, `brew install container`, `container system start` once per boot. Full setup steps in the [user guide](docs/guide.md#sandbox-modes).
 
 ---
 
@@ -276,8 +281,9 @@ Every project can be configured independently from the **Add Project** sheet:
 | Worktree base directory | `~/worktrees/myproject` | Where new worktrees live (default: `../canopy-worktrees/<project>`) |
 | Auto-start Claude | on/off | Per-project override of the global default |
 | Claude flags | `--permission-mode auto` | Per-project override of the global flags |
-| Docker Sandbox | on/off | Run Claude inside a [Docker Sandbox](https://docs.docker.com/ai/sandboxes/) microVM |
+| Sandbox backend | Off / Docker Sandbox / Apple container | Run Claude inside a [Docker Sandbox](https://docs.docker.com/ai/sandboxes/) microVM or an [Apple container](https://github.com/apple/container) VM |
 | Sandbox flags | `--memory 8g` | Additional flags passed to `sbx run` |
+| Container image / flags | `canopy-claude` / `--memory 8g` | Image and extra flags for the Apple container backend |
 
 All configuration lives in `~/.config/canopy/`:
 
@@ -285,6 +291,7 @@ All configuration lives in `~/.config/canopy/`:
 - `projects.json` — project list and per-project config
 - `projects.backup.json` — automatic backup created on every launch
 - `sessions.json` — persisted sessions, restored on app restart
+- `sessions.backup.json` — automatic backup created on every launch
 - `prompts.json` — saved prompt library
 
 ---

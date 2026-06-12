@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Apple container sandbox backend**: the Docker Sandbox toggle is now a
+  picker -- Off / Docker Sandbox (sbx) / Apple container. The new backend runs
+  Claude Code inside a lightweight VM via Apple's open-source
+  [container](https://github.com/apple/container) runtime (macOS 26+, Apple
+  silicon) with no Docker Desktop dependency. The worktree is mounted at its
+  host path and `~/.claude` is mounted from the host, so session resume, Show
+  Transcript, and activity tracking work in sandboxed sessions (unlike sbx).
+  The image defaults to `canopy-claude` and a **Build Image** button in
+  Settings creates it from Canopy's built-in recipe (native Claude Code
+  install, so `/doctor` is clean against the mounted host config). Settings
+  gain Container image / Container flags fields (global and per-project)
+  plus a `container` CLI path row; Canopy validates the CLI is installed,
+  the runtime is started, and whether the image exists locally.
+
+- **Per-session sandbox override**: the New Worktree Session sheet gains a
+  Sandbox picker (Use project default / Off / Docker Sandbox / Apple
+  container) that applies to that session only. Resolution order is
+  session → project → global.
+
+### Changed
+- Settings/projects persistence: `useSandbox` (bool) is superseded by
+  `sandboxBackend` (`off` / `dockerSbx` / `appleContainer`). Existing files
+  migrate automatically on load; the legacy key is still read.
+
+### Fixed (pre-release app-wide audit)
+- **Closing a session now terminates its shell and claude process.** They
+  previously kept running (and an agent kept working/spending) invisibly
+  until the app quit.
+- **Session resume/transcripts/cost now work for paths with `_`, spaces,
+  and other special characters**: Canopy's encoding of Claude Code's
+  `~/.claude/projects/` directory names only handled `/` and `.`, while
+  Claude replaces every non-alphanumeric character -- so worktrees like
+  `fix_thing` silently lost resume and transcripts. `/tmp`-style paths now
+  resolve the way Claude's `process.cwd()` does.
+- **Merge & Finish** refuses to run when the main repository has
+  uncommitted changes (the merge switches its checked-out branch and would
+  drag them along), and it now restores the branch you had checked out
+  instead of leaving the repo on the merge target. Cleanup closes the
+  session only after the git operations succeed.
+- **The unmerged-commits warning before deleting a worktree now works on
+  master/develop repos** -- it was hardcoded to compare against `main` and
+  silently passed when that branch didn't exist. Unknown merge state now
+  warns instead of staying quiet.
+- sessions.json is written atomically and backed up on load (a crash
+  mid-write could previously corrupt it, and the next save erased all
+  sessions permanently).
+- Image build no longer hangs forever on builds with more than 64 KB of
+  output (the progress pipe was only drained after exit); builds also get
+  a 30-minute timeout. Settings save failures keep the sheet open with an
+  error instead of pretending success; a corrupt settings.json is backed
+  up to `settings.json.corrupt` before falling back to defaults.
+- Reordering plain sessions in the sidebar no longer moves the wrong
+  session when project sessions exist; Send Prompt is disabled for
+  sessions whose terminal hasn't been opened yet (it silently did
+  nothing); single quotes in Claude flags no longer break the sandbox
+  command; closed sessions no longer reappear in the git status bar.
+
+### Fixed (Apple container hardening, from adversarial review + end-to-end probing)
+- **git now works in sandboxed worktree sessions**: the project's main
+  repository is mounted alongside the worktree (a worktree's `.git` file
+  points there); `~/.gitconfig` is mounted so commits have your identity.
+- **Terminal no longer renders garbled** in container sessions: TERM,
+  COLORTERM, and a UTF-8 locale are passed into the VM, and claude starts
+  only after the VM terminal has its real window size (it briefly reports
+  0x0, which made claude lay out for 80 columns).
+- Home-directory sessions are blocked for the container backend with a clear
+  message -- mounting `~` overlaps the `~/.claude` mounts and breaks the VM.
+- Enabling "Override global Claude settings" on a project no longer silently
+  saves auto-start=off and empty flags; fields now seed from the effective
+  values, so saving without changes is a no-op.
+- Config files written by a newer Canopy (unknown sandbox backend value) no
+  longer silently factory-reset all settings/projects on load.
+- Validation now also detects a missing Linux kernel (`container system
+  status` passes even without one) and points at the exact fix command.
+- Saving Settings (or a project sheet) while backend validation is running
+  no longer persists a stale backend value.
+- Fresh machines: `~/.claude`, `~/.claude.json`, and `~/.gitconfig` are
+  created on first sandboxed launch instead of failing the mounts; the image
+  build command quotes user input; claude self-updates inside the ephemeral
+  VM are disabled (`DISABLE_AUTOUPDATER=1`).
+
 ## [0.9.5] - 2026-05-14
 
 ### Added

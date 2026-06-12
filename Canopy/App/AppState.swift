@@ -268,12 +268,17 @@ final class AppState: ObservableObject {
                 sessionCommitsAhead.removeValue(forKey: session.id)
                 continue
             }
-            if let diff = await git.diffStat(repoPath: path) {
+            let diff = await git.diffStat(repoPath: path)
+            let ahead = await git.commitsAhead(repoPath: path)
+            // The session may have been closed during the awaits above --
+            // writing then would resurrect its entries permanently.
+            guard sessions.contains(where: { $0.id == session.id }) else { continue }
+            if let diff {
                 sessionDiffStats[session.id] = diff
             } else {
                 sessionDiffStats.removeValue(forKey: session.id)
             }
-            if let ahead = await git.commitsAhead(repoPath: path), ahead > 0 {
+            if let ahead, ahead > 0 {
                 sessionCommitsAhead[session.id] = ahead
             } else {
                 sessionCommitsAhead.removeValue(forKey: session.id)
@@ -467,10 +472,70 @@ final class AppState: ObservableObject {
     /// 3. Creates symlinks for heavy directories
     /// 4. Runs setup commands
     /// 5. Launches a terminal session in the worktree
+    /// Creates a session in an existing worktree directory (no git worktree
+    /// add), resuming the most recent Claude session found for it.
+    /// `sandboxBackend` nil = inherit project/global, like everywhere else.
+    func openWorktreeSession(project: Project, worktreePath: String, branch: String?, sandboxBackend: SandboxBackend? = nil) {
+        let sessionId = ClaudeSessionFinder.findLatestSessionId(for: worktreePath)
+        let session = SessionInfo(
+            name: branch ?? "session",
+            workingDirectory: worktreePath,
+            projectId: project.id,
+            branchName: branch,
+            worktreePath: worktreePath,
+            claudeSessionId: sessionId,
+            sandboxBackend: sandboxBackend
+        )
+        sessions.append(session)
+        saveSessions()
+    }
+
+    /// Resolves the sandbox backend for a session:
+    /// session override → project override → global setting.
+    func sandboxBackend(for session: SessionInfo) -> SandboxBackend {
+        if let override = session.sandboxBackend {
+            return override
+        }
+        if let project = projects.first(where: { $0.id == session.projectId }) {
+            return project.resolvedSandboxBackend(globalSettings: settings)
+        }
+        return settings.sandboxBackend
+    }
+
+    /// Builds the claude command for a session. The backend comes from the
+    /// per-session resolution above; flags and image resolve through the
+    /// normal project → global chain.
+    ///
+    /// Worktree sessions additionally mount the project's main repository:
+    /// the worktree's `.git` file points there, so git inside the container
+    /// is broken without it. Only for real worktrees -- a worktree is never
+    /// inside the repo, so the mounts can't overlap (overlapping virtiofs
+    /// mounts are silently dropped or hang the VM).
+    func claudeCommand(for session: SessionInfo) -> String {
+        let project = projects.first { $0.id == session.projectId }
+        var extraMounts: [String] = []
+        if session.worktreePath != nil,
+           let repoPath = project?.repositoryPath,
+           // Compare resolved paths: /tmp vs /private/tmp spellings of the
+           // same directory must not produce a duplicate (overlapping) mount.
+           SandboxBackend.realResolvedPath(repoPath)
+               != SandboxBackend.realResolvedPath(session.workingDirectory) {
+            extraMounts.append(repoPath)
+        }
+        return sandboxBackend(for: session).claudeCommand(
+            claudeFlags: project?.claudeFlags ?? settings.claudeFlags,
+            sbxFlags: project?.sbxFlags ?? settings.sbxFlags,
+            containerImage: project?.containerImage ?? settings.containerImage,
+            containerFlags: project?.containerFlags ?? settings.containerFlags,
+            extraMountPaths: extraMounts
+        )
+    }
+
     func createWorktreeSession(
         project: Project,
         branchName: String,
-        baseBranch: String
+        baseBranch: String,
+        sandboxBackend: SandboxBackend? = nil
     ) async throws {
         worktreeSetupInProgress = true
         worktreeSetupStatus = "Creating worktree..."
@@ -531,7 +596,8 @@ final class AppState: ObservableObject {
                 workingDirectory: worktreePath,
                 projectId: project.id,
                 branchName: branchName,
-                worktreePath: worktreePath
+                worktreePath: worktreePath,
+                sandboxBackend: sandboxBackend
             )
             withAnimation(.easeOut(duration: 0.25)) {
                 if tabSortMode == .manual {
@@ -607,9 +673,25 @@ final class AppState: ObservableObject {
         sessions = result
     }
 
-    /// Moves sessions using IndexSet (for sidebar .onMove).
-    func moveSession(from source: IndexSet, to destination: Int) {
-        sessions.move(fromOffsets: source, toOffset: destination)
+    /// Reorders plain (non-project) sessions (sidebar .onMove).
+    /// `source`/`destination` are indices into the FILTERED plain-session
+    /// list -- applying them to the full array moved arbitrary other
+    /// sessions when project sessions interleave.
+    func movePlainSessions(from source: IndexSet, to destination: Int) {
+        var plain = sessions.filter { $0.projectId == nil }
+        plain.move(fromOffsets: source, toOffset: destination)
+
+        var result: [SessionInfo] = []
+        var plainIndex = 0
+        for session in sessions {
+            if session.projectId == nil {
+                result.append(plain[plainIndex])
+                plainIndex += 1
+            } else {
+                result.append(session)
+            }
+        }
+        sessions = result
         tabSortMode = .manual
     }
 
@@ -710,21 +792,36 @@ final class AppState: ObservableObject {
 
     func saveSessions() {
         guard !isTerminating else { return }
-        guard let data = try? JSONEncoder().encode(sessions) else { return }
-        FileManager.default.createFile(atPath: sessionsFilePath, contents: data)
+        guard let data = try? JSONEncoder().encode(sessions) else {
+            NSLog("Canopy: failed to encode sessions for persistence")
+            return
+        }
+        // Atomic: a crash mid-write must not corrupt the file (a corrupt
+        // file decodes as no sessions, and the next save makes that final).
+        do {
+            try data.write(to: URL(fileURLWithPath: sessionsFilePath), options: .atomic)
+        } catch {
+            NSLog("Canopy: failed to write %@ (%@)", sessionsFilePath, "\(error)")
+        }
     }
 
     /// Save sessions and mark as terminating so cleanup doesn't overwrite the file.
     func saveSessionsBeforeTermination() {
         guard let data = try? JSONEncoder().encode(sessions) else { return }
-        FileManager.default.createFile(atPath: sessionsFilePath, contents: data)
+        try? data.write(to: URL(fileURLWithPath: sessionsFilePath), options: .atomic)
         isTerminating = true
     }
 
     func loadSessions() {
         let path = sessionsFilePath
-        guard let data = FileManager.default.contents(atPath: path),
-              var decoded = try? JSONDecoder().decode([SessionInfo].self, from: data) else {
+        guard let data = FileManager.default.contents(atPath: path) else { return }
+        // Backup before decoding, like projects.json -- if this file is
+        // corrupt, the next save would otherwise overwrite it with [].
+        let backupPath = (path as NSString).deletingPathExtension + ".backup.json"
+        try? FileManager.default.removeItem(atPath: backupPath)
+        try? FileManager.default.copyItem(atPath: path, toPath: backupPath)
+        guard var decoded = try? JSONDecoder().decode([SessionInfo].self, from: data) else {
+            NSLog("Canopy: sessions.json failed to decode; previous content kept at %@", backupPath)
             return
         }
         // Refresh Claude session IDs from disk
@@ -800,6 +897,10 @@ struct SessionInfo: Identifiable, Codable {
     /// When set, Claude is started with `--resume <id>`.
     var claudeSessionId: String?
 
+    /// Per-session sandbox override chosen at creation time.
+    /// nil = inherit the project/global setting.
+    var sandboxBackend: SandboxBackend?
+
     init(
         id: UUID = UUID(),
         name: String,
@@ -808,6 +909,7 @@ struct SessionInfo: Identifiable, Codable {
         branchName: String? = nil,
         worktreePath: String? = nil,
         claudeSessionId: String? = nil,
+        sandboxBackend: SandboxBackend? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -817,6 +919,7 @@ struct SessionInfo: Identifiable, Codable {
         self.branchName = branchName
         self.worktreePath = worktreePath
         self.claudeSessionId = claudeSessionId
+        self.sandboxBackend = sandboxBackend
         self.createdAt = createdAt
     }
 }

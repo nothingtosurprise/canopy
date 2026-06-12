@@ -1,6 +1,6 @@
 import Foundation
 
-/// Checks whether Docker and the `sbx` CLI are available on the system.
+/// Checks whether the CLI tools required by a sandbox backend are available.
 ///
 /// Uses a login shell to resolve PATH so that tools installed via Homebrew
 /// or Docker Desktop are found even when running from a GUI app.
@@ -9,6 +9,29 @@ struct SandboxChecker {
         case available
         case missingDocker
         case missingSbx
+        case missingContainer
+        case containerSystemStopped
+        case missingKernel
+    }
+
+    /// Checks that the given backend's tools are installed and ready.
+    static func check(backend: SandboxBackend) async -> Status {
+        switch backend {
+        case .off:
+            return .available
+        case .dockerSbx:
+            return await check()
+        case .appleContainer:
+            guard await commandExists("container") else { return .missingContainer }
+            // The runtime daemon must be started once per boot
+            // (`container system start`) before containers can run.
+            guard await succeeds("container system status") else { return .containerSystemStopped }
+            // `system status` exits 0 even when no default Linux kernel is
+            // installed, but `container run` then fails. The kernel symlink
+            // lives in the runtime's app root.
+            guard await succeeds(#"test -e "$HOME/Library/Application Support/com.apple.container/kernels/default.kernel-arm64""#) else { return .missingKernel }
+            return .available
+        }
     }
 
     /// Checks for both `docker` and `sbx` in PATH.
@@ -38,9 +61,14 @@ struct SandboxChecker {
     /// Uses `-ilc` (interactive login) so that both `.zprofile` and `.zshrc` are
     /// sourced -- Homebrew's PATH is often configured in `.zshrc` only.
     static func commandExists(_ name: String) async -> Bool {
+        await succeeds("which \(name)")
+    }
+
+    /// Returns true if the given shell command exits 0 in a login shell.
+    static func succeeds(_ command: String) async -> Bool {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: loginShell())
-        process.arguments = ["-ilc", "which \(name)"]
+        process.arguments = ["-ilc", command]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
@@ -48,6 +76,9 @@ struct SandboxChecker {
             process.waitUntilExit()
             return process.terminationStatus == 0
         } catch {
+            // Spawn failure is not the same as "tool missing", but callers
+            // can only see false -- at least leave a trace for diagnosis.
+            NSLog("Canopy: SandboxChecker could not run %@ (%@)", command, "\(error)")
             return false
         }
     }
