@@ -56,7 +56,7 @@ Session IDs are found automatically by scanning `~/.claude/projects/`.
 
 ### Sandbox modes
 
-Canopy can optionally run Claude Code inside a sandbox for hard process isolation. Your working directory is bind-mounted into the sandbox, so file edits work normally, but the agent can't touch the rest of your system. Two backends are available.
+Canopy can optionally run Claude Code inside a sandbox for hard process isolation. Your working directory is bind-mounted into the sandbox, so file edits work normally, but everything that isn't explicitly mounted — SSH keys, the Keychain, other repos, the rest of your home directory — is out of reach. Two backends are available.
 
 The backend can be set at three levels -- resolution order is **session → project → global**:
 

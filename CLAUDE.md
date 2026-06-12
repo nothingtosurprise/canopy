@@ -1,6 +1,6 @@
 # Canopy
 
-macOS app for running parallel Claude Code sessions across git worktrees (v0.9.3).
+macOS app for running parallel Claude Code sessions across git worktrees (version: see VERSION file).
 
 ## Build
 

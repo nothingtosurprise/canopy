@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sandboxBackend` (`off` / `dockerSbx` / `appleContainer`). Existing files
   migrate automatically on load; the legacy key is still read.
 
-### Fixed (pre-release app-wide audit)
+### Fixed
 - **Closing a session now terminates its shell and claude process.** They
   previously kept running (and an agent kept working/spending) invisibly
   until the app quit.
@@ -65,10 +65,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing); single quotes in Claude flags no longer break the sandbox
   command; closed sessions no longer reappear in the git status bar.
 
-### Fixed (Apple container hardening, from adversarial review + end-to-end probing)
+Apple container hardening, from adversarial review and end-to-end probing
+with the real runtime:
 - **git now works in sandboxed worktree sessions**: the project's main
   repository is mounted alongside the worktree (a worktree's `.git` file
-  points there); `~/.gitconfig` is mounted so commits have your identity.
+  points there); `~/.gitconfig` is mounted **read-only** so commits have
+  your identity -- read-only because a writable copy would let a sandboxed
+  agent plant a git alias or `core.hooksPath` that executes on the host
+  the next time you run git.
+- The user guide gains a "What sandboxing does -- and doesn't -- protect
+  against" section: an honest threat model covering the writable
+  worktree/main repo (including `.git/hooks`), writable Claude state, and
+  unrestricted outbound network. README and in-app Help state the precise
+  boundary ("everything not explicitly mounted") instead of overclaiming.
 - **Terminal no longer renders garbled** in container sessions: TERM,
   COLORTERM, and a UTF-8 locale are passed into the VM, and claude starts
   only after the VM terminal has its real window size (it briefly reports
